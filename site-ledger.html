@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>SiteLedger</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;background:#111;}
+  body{font-family:'DM Sans',sans-serif;color:#e0e0e0;-webkit-font-smoothing:antialiased;}
+  input,select,button,textarea{font-family:inherit;}
+  input[type=date]::-webkit-calendar-picker-indicator,
+  input[type=time]::-webkit-calendar-picker-indicator{filter:invert(0.5);}
+  ::-webkit-scrollbar{width:4px;height:4px;}
+  ::-webkit-scrollbar-thumb{background:#333;border-radius:2px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useMemo,useCallback}=React;
+
+const SURL="https://ncidprjggyctargonrmg.supabase.co";
+const SKEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jaWRwcmpnZ3ljdGFyZ29ucm1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0MTQ1NTcsImV4cCI6MjA5MDk5MDU1N30.xvBOkwAEzphxjPs_gJ_nSPM6EKYs0kRnQvbQEZrjqO8";
+const BH={"Content-Type":"application/json","apikey":SKEY};
+const AH=t=>({...BH,"Authorization":`Bearer ${t}`});
+
+const api={
+  async signUp(e,p){try{const r=await fetch(`${SURL}/auth/v1/signup`,{method:"POST",headers:BH,body:JSON.stringify({email:e,password:p})});return r.json();}catch(ex){return{error:{message:"Network error: "+ex.message}};}},
+  async signIn(e,p){try{const r=await fetch(`${SURL}/auth/v1/token?grant_type=password`,{method:"POST",headers:BH,body:JSON.stringify({email:e,password:p})});return r.json();}catch(ex){return{error:{message:"Network error: "+ex.message}};}},
+  async signOut(t){try{await fetch(`${SURL}/auth/v1/logout`,{method:"POST",headers:AH(t)});}catch{}},
+  async user(t){const r=await fetch(`${SURL}/auth/v1/user`,{headers:AH(t)});return r.json();},
+  async select(t,table,qs=""){try{const r=await fetch(`${SURL}/rest/v1/${table}?select=*${qs}&order=created_at.asc`,{headers:AH(t)});return r.json();}catch{return[];}},
+  async insert(t,table,body){try{const r=await fetch(`${SURL}/rest/v1/${table}`,{method:"POST",headers:{...AH(t),"Prefer":"return=representation"},body:JSON.stringify(body)});return r.json();}catch{return null;}},
+  async update(t,table,id,body){try{const r=await fetch(`${SURL}/rest/v1/${table}?id=eq.${id}`,{method:"PATCH",headers:{...AH(t),"Prefer":"return=representation"},body:JSON.stringify(body)});return r.json();}catch{return null;}},
+  async delete(t,table,id){try{await fetch(`${SURL}/rest/v1/${table}?id=eq.${id}`,{method:"DELETE",headers:AH(t)});}catch{}},
+};
+
+// CRA mileage rate 2024
+const CRA_RATE=0.70;
+const JOB_COLORS=["#E8651A","#2E86AB","#A23B72","#F18F01","#3BB273","#6B4226","#1B998B","#C0392B","#7B2FBE","#0077B6"];
+const MN=["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function fmtDur(ms){if(!ms||ms<0)return"0h 0m";const m=Math.floor(ms/60000);return`${Math.floor(m/60)}h ${m%60}m`;}
+function fmtCAD(n){return new Intl.NumberFormat("en-CA",{style:"currency",currency:"CAD"}).format(n||0);}
+function calcEarnings(s,jobs){const j=jobs.find(x=>x.id===s.job_id);if(!j||!s.end_time)return 0;return((new Date(s.end_time)-new Date(s.start_time))/3600000)*j.rate;}
+function calcDur(s){if(!s.end_time)return 0;return new Date(s.end_time)-new Date(s.start_time);}
+function dayKey(ts){const d=new Date(ts);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
+function todayStr(){return new Date().toISOString().slice(0,10);}
+
+const LS="sl_auth_v4";
+function loadAuth(){try{return JSON.parse(localStorage.getItem(LS));}catch{return null;}}
+function saveAuth(d){try{localStorage.setItem(LS,JSON.stringify(d));}catch{}}
+function clearAuth(){try{localStorage.removeItem(LS);}catch{}}
+
+// ─── Icons ────────────────────────────────────────────────────────────────────
+function Icon({name,size=18}){
+  const s={width:size,height:size,fill:"none",stroke:"currentColor",strokeWidth:"2",viewBox:"0 0 24 24"};
+  const w={...s,strokeWidth:"2.5"};
+  const m={
+    clock:<svg {...s}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
+    cal:<svg {...s}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+    chart:<svg {...s}><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
+    cog:<svg {...s}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+    plus:<svg {...w}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+    trash:<svg {...s}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>,
+    edit:<svg {...s}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+    check:<svg {...w}><polyline points="20 6 9 17 4 12"/></svg>,
+    logout:<svg {...s}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+    cl:<svg {...w}><polyline points="15 18 9 12 15 6"/></svg>,
+    cr:<svg {...w}><polyline points="9 18 15 12 9 6"/></svg>,
+    dl:<svg {...s}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+    x:<svg {...w}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    truck:<svg {...s}><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 5v3h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>,
+    user:<svg {...s}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+    users:<svg {...s}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    note:<svg {...s}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
+    qb:<svg {...s}><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>,
+  };
+  return m[name]||null;
+}
+
+const inp={width:"100%",padding:"12px 14px",borderRadius:10,border:"1px solid #333",background:"#1a1a1a",color:"#e0e0e0",fontSize:15,fontFamily:"inherit",boxSizing:"border-box",outline:"none"};
+const lbl={color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.5,textTransform:"uppercase",display:"block",marginBottom:6};
+const ib={background:"transparent",border:"none",color:"#444",cursor:"pointer",padding:4,display:"flex",alignItems:"center",borderRadius:6};
+const card={background:"#1a1a1a",borderRadius:16,border:"1px solid #2a2a2a"};
+
+// ─── Modal wrapper ────────────────────────────────────────────────────────────
+function Modal({children,onClose}){
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:1000,backdropFilter:"blur(4px)"}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div style={{width:"100%",maxWidth:430,background:"#161616",borderRadius:"20px 20px 0 0",padding:"24px 24px 44px",border:"1px solid #2a2a2a",borderBottom:"none",maxHeight:"90vh",overflowY:"auto"}}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ModalHeader({title,subtitle,onClose}){
+  return(
+    <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20}}>
+      <div>
+        <div style={{fontSize:18,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff"}}>{title}</div>
+        {subtitle&&<div style={{color:"#555",fontSize:13,marginTop:2}}>{subtitle}</div>}
+      </div>
+      <button onClick={onClose} style={{...ib,background:"#222",borderRadius:8,padding:8,color:"#555"}}><Icon name="x" size={16}/></button>
+    </div>
+  );
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+function AuthScreen({onAuth}){
+  const [mode,setMode]=useState("signup");
+  const [email,setEmail]=useState(""); const [pw,setPw]=useState("");
+  const [err,setErr]=useState(""); const [msg,setMsg]=useState(""); const [busy,setBusy]=useState(false);
+  async function submit(){
+    if(!email||!pw){setErr("Please enter your email and password.");return;}
+    if(pw.length<6){setErr("Password must be at least 6 characters.");return;}
+    setErr("");setMsg("");setBusy(true);
+    if(mode==="signup"){
+      const d=await api.signUp(email,pw);
+      if(d.error){setErr(d.error.message);}
+      else{setMsg("Account created! Signing you in...");const s=await api.signIn(email,pw);if(s.access_token){saveAuth(s);onAuth(s);}else{setErr(s.error?.message||"Please sign in manually.");setMode("signin");}}
+    }else{const d=await api.signIn(email,pw);if(d.access_token){saveAuth(d);onAuth(d);}else setErr(d.error?.message||"Incorrect email or password.");}
+    setBusy(false);
+  }
+  return(
+    <div style={{maxWidth:430,margin:"0 auto",minHeight:"100vh",background:"#111",display:"flex",flexDirection:"column",justifyContent:"center",padding:"40px 24px"}}>
+      <div style={{marginBottom:36}}><div style={{fontSize:36,fontWeight:800,fontFamily:"'Syne',sans-serif",color:"#fff",letterSpacing:-1}}>Site<span style={{color:"#E8651A"}}>Ledger</span></div><div style={{color:"#444",fontSize:14,marginTop:6}}>Time tracking for the job site</div></div>
+      <div style={{display:"flex",background:"#1a1a1a",borderRadius:12,padding:4,marginBottom:24,border:"1px solid #2a2a2a"}}>
+        {[["signup","Create Account"],["signin","Sign In"]].map(([m,l])=>(
+          <button key={m} onClick={()=>{setMode(m);setErr("");setMsg("");}} style={{flex:1,padding:"10px",borderRadius:9,border:"none",background:mode===m?"#E8651A":"transparent",color:mode===m?"#fff":"#555",fontWeight:mode===m?700:400,cursor:"pointer",fontSize:14}}>{l}</button>
+        ))}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:16}}>
+        <div><label style={lbl}>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value.trim())} placeholder="you@example.com" style={inp} autoCapitalize="none" autoCorrect="off"/></div>
+        <div><label style={lbl}>Password</label><input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Min. 6 characters" style={inp} onKeyDown={e=>e.key==="Enter"&&submit()}/></div>
+        {err&&<div style={{background:"#c0392b22",border:"1px solid #c0392b55",borderRadius:10,padding:"12px 14px",color:"#e74c3c",fontSize:13,lineHeight:1.5}}>{err}</div>}
+        {msg&&<div style={{background:"#3BB27322",border:"1px solid #3BB27355",borderRadius:10,padding:"12px 14px",color:"#3BB273",fontSize:13}}>{msg}</div>}
+        <button onClick={submit} disabled={busy} style={{padding:"15px",borderRadius:12,border:"none",background:busy?"#444":"#E8651A",color:"#fff",fontSize:16,fontWeight:700,fontFamily:"'Syne',sans-serif",cursor:busy?"not-allowed":"pointer",marginTop:4}}>{busy?"Please wait...":(mode==="signup"?"Create Account":"Sign In")}</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Session Entry/Edit Modal ─────────────────────────────────────────────────
+function SessionModal({session,date,jobs,employees,onSave,onClose,busy}){
+  const isEdit=!!session;
+  const defaultDate=date?`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`:todayStr();
+  const defaultSt=isEdit?new Date(session.start_time).toTimeString().slice(0,5):"08:00";
+  const defaultEt=isEdit&&session.end_time?new Date(session.end_time).toTimeString().slice(0,5):"16:00";
+  const [form,setForm]=useState({jobId:session?.job_id||jobs[0]?.id||"",empId:session?.employee_id||"",date:isEdit?dayKey(session.start_time):defaultDate,st:defaultSt,et:defaultEt});
+  const startDt=new Date(`${form.date}T${form.st}`),endDt=new Date(`${form.date}T${form.et}`);
+  const valid=endDt>startDt;
+  const job=jobs.find(j=>j.id===form.jobId);
+  const prevMs=valid?endDt-startDt:0;
+  const prevEarn=valid&&job?(prevMs/3600000)*job.rate:0;
+  const subtitle=isEdit?"Edit entry":(date?`${MN[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`:"New entry");
+  return(
+    <Modal onClose={onClose}>
+      <ModalHeader title={isEdit?"Edit Entry":"Add Entry"} subtitle={subtitle} onClose={onClose}/>
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div>
+          <label style={lbl}>Job</label>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {jobs.map(j=>(
+              <button key={j.id} onClick={()=>setForm({...form,jobId:j.id})}
+                style={{display:"flex",alignItems:"center",gap:12,padding:"11px 14px",borderRadius:10,border:form.jobId===j.id?`1.5px solid ${j.color}`:"1.5px solid #2a2a2a",background:form.jobId===j.id?`${j.color}15`:"transparent",cursor:"pointer"}}>
+                <div style={{width:9,height:9,borderRadius:"50%",background:j.color,flexShrink:0}}/>
+                <div style={{flex:1,textAlign:"left"}}><div style={{color:"#e0e0e0",fontSize:14,fontWeight:600}}>{j.name}</div><div style={{color:"#555",fontSize:12}}>{fmtCAD(j.rate)}/hr</div></div>
+                {form.jobId===j.id&&<Icon name="check" size={15}/>}
+              </button>
+            ))}
+          </div>
+        </div>
+        {employees.length>0&&(
+          <div>
+            <label style={lbl}>Employee (optional)</label>
+            <select value={form.empId} onChange={e=>setForm({...form,empId:e.target.value})} style={inp}>
+              <option value="">— Me (owner) —</option>
+              {employees.map(e=><option key={e.id} value={e.id}>{e.name} · {fmtCAD(e.rate)}/hr</option>)}
+            </select>
+          </div>
+        )}
+        {!isEdit&&<div><label style={lbl}>Date</label><input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} style={inp}/></div>}
+        <div style={{display:"flex",gap:12}}>
+          <div style={{flex:1}}><label style={lbl}>Start</label><input type="time" value={form.st} onChange={e=>setForm({...form,st:e.target.value})} style={inp}/></div>
+          <div style={{flex:1}}><label style={lbl}>End</label><input type="time" value={form.et} onChange={e=>setForm({...form,et:e.target.value})} style={inp}/></div>
+        </div>
+        {valid&&(
+          <div style={{background:`${job?.color}15`,border:`1px solid ${job?.color}33`,borderRadius:12,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{color:"#888",fontSize:13}}>{fmtDur(prevMs)}</div>
+            <div style={{color:job?.color,fontSize:16,fontWeight:700,fontFamily:"'Syne',sans-serif"}}>{fmtCAD(prevEarn)}</div>
+          </div>
+        )}
+        {!valid&&form.st&&form.et&&<div style={{color:"#e74c3c",fontSize:12,padding:"8px 12px",background:"#e74c3c11",borderRadius:8}}>End time must be after start time.</div>}
+        <button onClick={()=>{if(valid&&form.jobId)onSave({...session,job_id:form.jobId,employee_id:form.empId||null,start_time:startDt.toISOString(),end_time:endDt.toISOString()});}} disabled={!valid||busy}
+          style={{width:"100%",padding:"15px",borderRadius:12,border:"none",background:valid?job?.color||"#E8651A":"#2a2a2a",color:valid?"#fff":"#444",fontSize:16,fontWeight:700,fontFamily:"'Syne',sans-serif",cursor:valid?"pointer":"not-allowed",opacity:busy?0.6:1,marginTop:4}}>
+          {busy?"Saving...":(isEdit?"Save Changes":"Save Entry")}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Clock Tab ────────────────────────────────────────────────────────────────
+function ClockTab({jobs,employees,sessions,active,onIn,onOut,onSave,onDelete,busy}){
+  const [selJob,setSelJob]=useState(jobs[0]?.id||"");
+  const [selEmp,setSelEmp]=useState("");
+  const [now,setNow]=useState(Date.now());
+  const [editSess,setEditSess]=useState(null);
+  useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(t);},[]);
+  useEffect(()=>{if(jobs.length&&!selJob)setSelJob(jobs[0].id);},[jobs]);
+  const aJob=jobs.find(j=>j.id===active?.job_id);
+  const elapsed=active?now-new Date(active.start_time):0;
+  const today=sessions.filter(s=>new Date(s.start_time).toDateString()===new Date().toDateString());
+  const todayEarn=today.reduce((s,x)=>s+calcEarnings(x,jobs),0);
+  const todayMs=today.reduce((s,x)=>s+calcDur(x),0);
+  return(
+    <div style={{padding:"0 0 100px"}}>
+      {editSess&&<SessionModal session={editSess} jobs={jobs} employees={employees} onSave={s=>{onSave(s);setEditSess(null);}} onClose={()=>setEditSess(null)} busy={busy}/>}
+      <div style={{...card,padding:"20px 24px",margin:"16px 16px 0"}}>
+        <div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:2,textTransform:"uppercase",marginBottom:12}}>Today</div>
+        <div style={{display:"flex",gap:32}}>
+          <div><div style={{fontSize:28,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff",lineHeight:1}}>{fmtCAD(todayEarn)}</div><div style={{color:"#555",fontSize:12,marginTop:4}}>earned</div></div>
+          <div><div style={{fontSize:28,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff",lineHeight:1}}>{fmtDur(todayMs)}</div><div style={{color:"#555",fontSize:12,marginTop:4}}>logged</div></div>
+        </div>
+      </div>
+      {active&&(
+        <div style={{background:`linear-gradient(135deg,${aJob?.color}22,${aJob?.color}11)`,border:`1px solid ${aJob?.color}44`,borderRadius:16,margin:"12px 16px 0",padding:"20px 24px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}><div style={{width:8,height:8,borderRadius:"50%",background:aJob?.color,boxShadow:`0 0 8px ${aJob?.color}`}}/><span style={{color:"#999",fontSize:12,fontFamily:"'DM Mono',monospace",letterSpacing:1}}>ACTIVE</span></div>
+          <div style={{fontSize:22,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff",marginBottom:4}}>{aJob?.name}</div>
+          <div style={{fontSize:36,fontFamily:"'DM Mono',monospace",color:aJob?.color,fontWeight:600}}>{fmtDur(elapsed)}</div>
+          <div style={{color:"#666",fontSize:13,marginTop:4}}>≈ {fmtCAD((elapsed/3600000)*(aJob?.rate||0))}</div>
+        </div>
+      )}
+      <div style={{...card,margin:"12px 16px 0",padding:"20px 24px"}}>
+        {!active?(
+          <>
+            <label style={lbl}>Select Job</label>
+            {jobs.length===0&&<div style={{color:"#555",fontSize:13,padding:"8px 0 16px"}}>No jobs yet — add one in the Jobs tab.</div>}
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:employees.length>0?12:16}}>
+              {jobs.map(j=>(
+                <button key={j.id} onClick={()=>setSelJob(j.id)}
+                  style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",borderRadius:10,border:selJob===j.id?`1.5px solid ${j.color}`:"1.5px solid #2a2a2a",background:selJob===j.id?`${j.color}15`:"transparent",cursor:"pointer"}}>
+                  <div style={{width:10,height:10,borderRadius:"50%",background:j.color,flexShrink:0}}/>
+                  <div style={{flex:1,textAlign:"left"}}><div style={{color:"#e0e0e0",fontSize:14,fontWeight:600}}>{j.name}</div><div style={{color:"#555",fontSize:12}}>{fmtCAD(j.rate)}/hr</div></div>
+                  {selJob===j.id&&<Icon name="check" size={16}/>}
+                </button>
+              ))}
+            </div>
+            {employees.length>0&&(
+              <div style={{marginBottom:16}}>
+                <label style={lbl}>Employee (optional)</label>
+                <select value={selEmp} onChange={e=>setSelEmp(e.target.value)} style={inp}>
+                  <option value="">— Me (owner) —</option>
+                  {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+              </div>
+            )}
+            <button onClick={()=>onIn(selJob,selEmp||null)} disabled={!selJob||busy||jobs.length===0}
+              style={{width:"100%",padding:"15px",borderRadius:12,border:"none",background:selJob&&jobs.length?jobs.find(j=>j.id===selJob)?.color||"#E8651A":"#2a2a2a",color:selJob&&jobs.length?"#fff":"#444",fontSize:16,fontWeight:700,fontFamily:"'Syne',sans-serif",cursor:"pointer",opacity:busy?0.6:1}}>
+              {busy?"...":"Clock In"}
+            </button>
+          </>
+        ):(
+          <button onClick={onOut} disabled={busy} style={{width:"100%",padding:"16px",borderRadius:12,border:"2px solid #c0392b",background:"transparent",color:"#e74c3c",fontSize:16,fontWeight:700,fontFamily:"'Syne',sans-serif",cursor:"pointer",opacity:busy?0.6:1}}>{busy?"Saving...":"Clock Out"}</button>
+        )}
+      </div>
+      {sessions.length>0&&(
+        <div style={{margin:"20px 16px 0"}}>
+          <div style={{color:"#444",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:2,textTransform:"uppercase",marginBottom:10}}>Recent</div>
+          {[...sessions].reverse().slice(0,8).map(s=>{
+            const j=jobs.find(x=>x.id===s.job_id);
+            const emp=employees.find(x=>x.id===s.employee_id);
+            return(
+              <div key={s.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 0",borderBottom:"1px solid #1e1e1e"}}>
+                <div style={{width:3,height:36,borderRadius:2,background:j?.color||"#555",flexShrink:0}}/>
+                <div style={{flex:1}}>
+                  <div style={{color:"#ccc",fontSize:13,fontWeight:600}}>{j?.name||"Unknown"}{emp?<span style={{color:"#555",fontWeight:400}}> · {emp.name}</span>:null}</div>
+                  <div style={{color:"#555",fontSize:12}}>{new Date(s.start_time).toLocaleDateString("en-CA")} · {fmtDur(calcDur(s))}</div>
+                </div>
+                <div style={{color:"#e0e0e0",fontSize:13,fontWeight:600,marginRight:4}}>{fmtCAD(calcEarnings(s,jobs))}</div>
+                <button onClick={()=>setEditSess(s)} style={ib}><Icon name="edit" size={14}/></button>
+                <button onClick={()=>{if(confirm("Delete this entry?"))onDelete(s.id);}} style={{...ib,color:"#c0392b"}}><Icon name="trash" size={14}/></button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Calendar Tab ─────────────────────────────────────────────────────────────
+function CalendarTab({jobs,employees,sessions,onSave,onDelete,busy}){
+  const [vd,setVd]=useState(new Date());
+  const [sel,setSel]=useState(null);
+  const [modal,setModal]=useState(null); // null | "add" | session object
+  const yr=vd.getFullYear(),mo=vd.getMonth();
+  const fd=new Date(yr,mo,1).getDay(),dim=new Date(yr,mo+1,0).getDate();
+  const byDay=useMemo(()=>{const m={};sessions.forEach(s=>{const k=dayKey(s.start_time);if(!m[k])m[k]=[];m[k].push(s);});return m;},[sessions]);
+  function dk(d){return`${yr}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
+  const ss=sel?(byDay[dk(sel)]||[]):[];
+  const selEarn=ss.reduce((s,x)=>s+calcEarnings(x,jobs),0);
+  const selMs=ss.reduce((s,x)=>s+calcDur(x),0);
+  const modalDate=sel?new Date(yr,mo,sel):new Date();
+  return(
+    <div style={{padding:"0 0 100px"}}>
+      {modal&&(
+        <SessionModal
+          session={modal==="add"?null:modal}
+          date={modal==="add"?modalDate:null}
+          jobs={jobs} employees={employees}
+          onSave={s=>{onSave(s,()=>setModal(null));}}
+          onClose={()=>setModal(null)} busy={busy}/>
+      )}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 20px 8px"}}>
+        <button onClick={()=>{setVd(new Date(yr,mo-1));setSel(null);}} style={ib}><Icon name="cl" size={16}/></button>
+        <div style={{fontSize:18,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff"}}>{MN[mo]} {yr}</div>
+        <button onClick={()=>{setVd(new Date(yr,mo+1));setSel(null);}} style={ib}><Icon name="cr" size={16}/></button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",padding:"0 16px",gap:2,marginBottom:4}}>
+        {["S","M","T","W","T","F","S"].map((d,i)=><div key={i} style={{textAlign:"center",color:"#444",fontSize:11,fontFamily:"'DM Mono',monospace",padding:"4px 0"}}>{d}</div>)}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",padding:"0 16px",gap:3}}>
+        {Array.from({length:fd}).map((_,i)=><div key={`e${i}`}/>)}
+        {Array.from({length:dim}).map((_,i)=>{
+          const d=i+1,k=dk(d),ds=byDay[k]||[];
+          const isTd=new Date().getDate()===d&&new Date().getMonth()===mo&&new Date().getFullYear()===yr;
+          const isSel=sel===d;
+          const cols=[...new Set(ds.map(s=>jobs.find(j=>j.id===s.job_id)?.color).filter(Boolean))];
+          return(
+            <button key={d} onClick={()=>setSel(isSel?null:d)}
+              style={{aspectRatio:"1",borderRadius:10,border:isSel?"1.5px solid #E8651A":isTd?"1.5px solid #444":"1.5px solid transparent",background:isSel?"#E8651A22":isTd?"#222":"transparent",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:4}}>
+              <span style={{color:isTd?"#E8651A":ds.length?"#e0e0e0":"#555",fontSize:13,fontWeight:isTd?700:400}}>{d}</span>
+              {cols.length>0&&<div style={{display:"flex",gap:2}}>{cols.slice(0,3).map((c,ci)=><div key={ci} style={{width:5,height:5,borderRadius:"50%",background:c}}/>)}</div>}
+            </button>
+          );
+        })}
+      </div>
+      {sel&&(
+        <div style={{...card,margin:"16px 16px 0",padding:"20px 24px"}}>
+          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:14}}>
+            <div>
+              <div style={{color:"#fff",fontSize:16,fontWeight:700,fontFamily:"'Syne',sans-serif"}}>{MN[mo]} {sel}</div>
+              {ss.length>0&&<div style={{color:"#555",fontSize:12,marginTop:2}}>{fmtDur(selMs)} · {fmtCAD(selEarn)}</div>}
+            </div>
+            <button onClick={()=>setModal("add")} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:10,border:"none",background:"#E8651A",color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}><Icon name="plus" size={14}/> Add</button>
+          </div>
+          {ss.length===0?(
+            <div style={{color:"#444",fontSize:13,textAlign:"center",padding:"20px 0"}}>No entries. <span onClick={()=>setModal("add")} style={{color:"#E8651A",cursor:"pointer",textDecoration:"underline"}}>Add one.</span></div>
+          ):ss.map(s=>{
+            const j=jobs.find(x=>x.id===s.job_id);
+            const emp=employees.find(x=>x.id===s.employee_id);
+            return(
+              <div key={s.id} style={{display:"flex",gap:12,padding:"10px 0",borderBottom:"1px solid #222",alignItems:"center"}}>
+                <div style={{width:3,borderRadius:2,background:j?.color,flexShrink:0,alignSelf:"stretch"}}/>
+                <div style={{flex:1}}>
+                  <div style={{color:"#ccc",fontSize:13,fontWeight:600}}>{j?.name}{emp?<span style={{color:"#555",fontWeight:400}}> · {emp.name}</span>:null}</div>
+                  <div style={{color:"#555",fontSize:12}}>{new Date(s.start_time).toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})} – {new Date(s.end_time).toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"})} · {fmtDur(calcDur(s))}</div>
+                </div>
+                <div style={{color:"#e0e0e0",fontSize:13,fontWeight:600,marginRight:4}}>{fmtCAD(calcEarnings(s,jobs))}</div>
+                <button onClick={()=>setModal(s)} style={ib}><Icon name="edit" size={14}/></button>
+                <button onClick={()=>{if(confirm("Delete this entry?"))onDelete(s.id);}} style={{...ib,color:"#c0392b"}}><Icon name="trash" size={14}/></button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Mileage Tab ─────────────────────────────────────────────────────────────
+function MileageTab({jobs,mileage,onAdd,onDelete,busy}){
+  const [showAdd,setShowAdd]=useState(false);
+  const [form,setForm]=useState({jobId:jobs[0]?.id||"",date:todayStr(),km:"",note:""});
+  const totalKm=mileage.reduce((s,x)=>s+Number(x.km),0);
+  const totalDeduct=totalKm*CRA_RATE;
+
+  function submit(){
+    if(!form.km||!form.jobId)return;
+    onAdd({job_id:form.jobId,date:form.date,km:parseFloat(form.km),note:form.note});
+    setForm({jobId:jobs[0]?.id||"",date:todayStr(),km:"",note:""});
+    setShowAdd(false);
+  }
+
+  function exportCSV(){
+    const rows=[["Date","Job","KM","Deduction (CAD)","Note"]];
+    mileage.forEach(m=>{const j=jobs.find(x=>x.id===m.job_id);rows.push([m.date,j?.name||"",m.km,(m.km*CRA_RATE).toFixed(2),m.note||""]);});
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([rows.map(r=>r.join(",")).join("\n")],{type:"text/csv"}));a.download="mileage-log.csv";a.click();
+  }
+
+  return(
+    <div style={{padding:"0 0 100px"}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,padding:"16px 16px 0"}}>
+        <div style={{...card,padding:"16px 18px"}}>
+          <div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.5,textTransform:"uppercase",marginBottom:6}}>Total KM</div>
+          <div style={{fontSize:22,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff"}}>{totalKm.toFixed(0)} km</div>
+        </div>
+        <div style={{...card,padding:"16px 18px"}}>
+          <div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.5,textTransform:"uppercase",marginBottom:6}}>CRA Deduction</div>
+          <div style={{fontSize:22,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#E8651A"}}>{fmtCAD(totalDeduct)}</div>
+        </div>
+      </div>
+      <div style={{padding:"4px 16px 0"}}><div style={{color:"#444",fontSize:11,textAlign:"right"}}>@ ${CRA_RATE}/km (CRA 2024 rate)</div></div>
+
+      <div style={{margin:"12px 16px 0"}}>
+        <button onClick={()=>setShowAdd(!showAdd)} style={{width:"100%",padding:"12px",borderRadius:12,border:"1px dashed #333",background:"transparent",color:"#666",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+          <Icon name="plus" size={14}/> Log Trip
+        </button>
+      </div>
+
+      {showAdd&&(
+        <div style={{...card,margin:"12px 16px 0",padding:"20px 24px"}}>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div><label style={lbl}>Job</label><select value={form.jobId} onChange={e=>setForm({...form,jobId:e.target.value})} style={inp}>{jobs.map(j=><option key={j.id} value={j.id}>{j.name}</option>)}</select></div>
+            <div><label style={lbl}>Date</label><input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} style={inp}/></div>
+            <div><label style={lbl}>Distance (km)</label><input type="number" value={form.km} onChange={e=>setForm({...form,km:e.target.value})} placeholder="e.g. 42" style={inp}/></div>
+            <div><label style={lbl}>Note (optional)</label><input type="text" value={form.note} onChange={e=>setForm({...form,note:e.target.value})} placeholder="e.g. Site A to hardware store" style={inp}/></div>
+            {form.km&&<div style={{background:"#E8651A15",border:"1px solid #E8651A33",borderRadius:10,padding:"10px 14px",display:"flex",justifyContent:"space-between"}}>
+              <span style={{color:"#888",fontSize:13}}>{form.km} km</span>
+              <span style={{color:"#E8651A",fontWeight:700,fontSize:13}}>{fmtCAD(form.km*CRA_RATE)} deduction</span>
+            </div>}
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={submit} style={{flex:1,padding:"12px",borderRadius:10,border:"none",background:"#E8651A",color:"#fff",fontWeight:700,cursor:"pointer"}}>Save Trip</button>
+              <button onClick={()=>setShowAdd(false)} style={{padding:"12px 16px",borderRadius:10,border:"1px solid #333",background:"transparent",color:"#666",cursor:"pointer"}}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mileage.length>0&&(
+        <div style={{margin:"16px 16px 0"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{color:"#444",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:2,textTransform:"uppercase"}}>Trips</div>
+            <button onClick={exportCSV} style={{...ib,color:"#666",fontSize:12,gap:4}}><Icon name="dl" size={13}/> Export</button>
+          </div>
+          {[...mileage].reverse().map(m=>{
+            const j=jobs.find(x=>x.id===m.job_id);
+            return(
+              <div key={m.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 0",borderBottom:"1px solid #1e1e1e"}}>
+                <div style={{width:3,height:36,borderRadius:2,background:j?.color||"#555",flexShrink:0}}/>
+                <div style={{flex:1}}>
+                  <div style={{color:"#ccc",fontSize:13,fontWeight:600}}>{j?.name||"Unknown"}</div>
+                  <div style={{color:"#555",fontSize:12}}>{m.date} · {m.km} km{m.note?` · ${m.note}`:""}</div>
+                </div>
+                <div style={{textAlign:"right",marginRight:4}}>
+                  <div style={{color:"#e0e0e0",fontSize:13,fontWeight:600}}>{fmtCAD(m.km*CRA_RATE)}</div>
+                  <div style={{color:"#444",fontSize:11}}>{m.km} km</div>
+                </div>
+                <button onClick={()=>{if(confirm("Delete this trip?"))onDelete(m.id);}} style={{...ib,color:"#c0392b"}}><Icon name="trash" size={14}/></button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {mileage.length===0&&!showAdd&&<div style={{textAlign:"center",padding:"40px 0",color:"#444",fontSize:14}}>No trips logged yet.</div>}
+    </div>
+  );
+}
+
+// ─── Reports Tab ─────────────────────────────────────────────────────────────
+function ReportsTab({jobs,employees,sessions,mileage}){
+  const [pre,setPre]=useState("month"); const [cs,setCs]=useState(""); const [ce,setCe]=useState("");
+  const now=new Date();
+  function range(){
+    if(pre==="week"){const s=new Date(now);s.setDate(now.getDate()-6);s.setHours(0,0,0,0);const e=new Date(now);e.setHours(23,59,59,999);return[s,e];}
+    if(pre==="month")return[new Date(now.getFullYear(),now.getMonth(),1),new Date(now.getFullYear(),now.getMonth(),now.getDate(),23,59,59,999)];
+    if(pre==="lastmonth"){const s=new Date(now.getFullYear(),now.getMonth()-1,1),e=new Date(now.getFullYear(),now.getMonth(),0);e.setHours(23,59,59,999);return[s,e];}
+    if(pre==="year")return[new Date(now.getFullYear(),0,1),now];
+    if(pre==="custom"&&cs&&ce){const e=new Date(ce);e.setHours(23,59,59,999);return[new Date(cs),e];}
+    return[new Date(0),new Date(8640000000000000)];
+  }
+  const [rs,re]=range();
+  const f=sessions.filter(s=>{const t=new Date(s.start_time);return t>=rs&&t<=re&&s.end_time;});
+  const fm=mileage.filter(m=>{const t=new Date(m.date);return t>=rs&&t<=re;});
+  const te=f.reduce((s,x)=>s+calcEarnings(x,jobs),0);
+  const tm=f.reduce((s,x)=>s+calcDur(x),0);
+  const totalKm=fm.reduce((s,x)=>s+Number(x.km),0);
+  const bj=jobs.map(j=>{const js=f.filter(s=>s.job_id===j.id);return{...j,e:js.reduce((s,x)=>s+calcEarnings(x,jobs),0),h:js.reduce((s,x)=>s+calcDur(x),0),n:js.length};}).filter(j=>j.n>0).sort((a,b)=>b.e-a.e);
+  const be=employees.map(e=>{const es=f.filter(s=>s.employee_id===e.id);const hrs=es.reduce((s,x)=>s+calcDur(x),0)/3600000;return{...e,hrs,cost:hrs*e.rate,n:es.length};}).filter(e=>e.n>0).sort((a,b)=>b.hrs-a.hrs);
+
+  function exportIIF(){
+    // QuickBooks IIF format for time entries
+    const lines=["!TIMERJOB\tJOBNAME\tTIMEBILLED\tJOBDESC"];
+    lines.push("!TIMEACT\tDATE\tJOBNAME\tEMP\tSERVICEITEM\tDURATION\tDESC\tBILLINGSTATUS");
+    f.forEach(s=>{
+      const j=jobs.find(x=>x.id===s.job_id);
+      const emp=employees.find(x=>x.id===s.employee_id);
+      const hrs=(calcDur(s)/3600000).toFixed(2);
+      const d=new Date(s.start_time);
+      const dateStr=`${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}`;
+      lines.push(`TIMEACT\t${dateStr}\t${j?.name||""}\t${emp?.name||"Owner"}\tServices\t${hrs}\t\t1`);
+    });
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/plain"}));a.download="site-ledger-quickbooks.iif";a.click();
+  }
+
+  function exportCSV(){
+    const rows=[["Date","Job","Employee","Start","End","Hours","Earnings (CAD)"]];
+    f.forEach(s=>{const j=jobs.find(x=>x.id===s.job_id);const emp=employees.find(x=>x.id===s.employee_id);rows.push([new Date(s.start_time).toLocaleDateString("en-CA"),j?.name||"",emp?.name||"Owner",new Date(s.start_time).toLocaleTimeString("en-CA"),new Date(s.end_time).toLocaleTimeString("en-CA"),(calcDur(s)/3600000).toFixed(2),calcEarnings(s,jobs).toFixed(2)]);});
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([rows.map(r=>r.join(",")).join("\n")],{type:"text/csv"}));a.download="site-ledger-report.csv";a.click();
+  }
+
+  return(
+    <div style={{padding:"0 0 100px"}}>
+      <div style={{display:"flex",gap:6,padding:"16px 16px 0",overflowX:"auto"}}>
+        {[{id:"week",l:"7 Days"},{id:"month",l:"This Month"},{id:"lastmonth",l:"Last Month"},{id:"year",l:"This Year"},{id:"custom",l:"Custom"}].map(p=>(
+          <button key={p.id} onClick={()=>setPre(p.id)} style={{padding:"8px 14px",borderRadius:20,border:pre===p.id?"none":"1px solid #2a2a2a",background:pre===p.id?"#E8651A":"transparent",color:pre===p.id?"#fff":"#666",fontSize:13,fontWeight:pre===p.id?700:400,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>{p.l}</button>
+        ))}
+      </div>
+      {pre==="custom"&&<div style={{display:"flex",gap:8,padding:"12px 16px 0"}}><input type="date" value={cs} onChange={e=>setCs(e.target.value)} style={{...inp,flex:1}}/><input type="date" value={ce} onChange={e=>setCe(e.target.value)} style={{...inp,flex:1}}/></div>}
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,padding:"12px 16px 0"}}>
+        <div style={{...card,padding:"16px 18px"}}><div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.5,textTransform:"uppercase",marginBottom:6}}>Earned</div><div style={{fontSize:22,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#E8651A"}}>{fmtCAD(te)}</div></div>
+        <div style={{...card,padding:"16px 18px"}}><div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.5,textTransform:"uppercase",marginBottom:6}}>Hours</div><div style={{fontSize:22,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff"}}>{fmtDur(tm)}</div></div>
+        <div style={{...card,padding:"16px 18px"}}><div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.5,textTransform:"uppercase",marginBottom:6}}>Mileage</div><div style={{fontSize:22,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#fff"}}>{totalKm.toFixed(0)} km</div></div>
+        <div style={{...card,padding:"16px 18px"}}><div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.5,textTransform:"uppercase",marginBottom:6}}>KM Deduction</div><div style={{fontSize:22,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#3BB273"}}>{fmtCAD(totalKm*CRA_RATE)}</div></div>
+      </div>
+
+      {bj.length>0&&(
+        <div style={{...card,margin:"16px 16px 0",padding:"20px 24px"}}>
+          <div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:2,textTransform:"uppercase",marginBottom:14}}>By Job</div>
+          {bj.map(j=>{const pct=te?(j.e/te)*100:0;return(
+            <div key={j.id} style={{marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:8,height:8,borderRadius:"50%",background:j.color}}/><span style={{color:"#ccc",fontSize:13}}>{j.name}</span></div>
+                <div><span style={{color:"#e0e0e0",fontSize:13,fontWeight:600}}>{fmtCAD(j.e)}</span><span style={{color:"#444",fontSize:12,marginLeft:8}}>{fmtDur(j.h)}</span></div>
+              </div>
+              <div style={{height:4,background:"#222",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:j.color,borderRadius:2}}/></div>
+            </div>
+          );})}
+        </div>
+      )}
+
+      {be.length>0&&(
+        <div style={{...card,margin:"12px 16px 0",padding:"20px 24px"}}>
+          <div style={{color:"#555",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:2,textTransform:"uppercase",marginBottom:14}}>Crew Hours</div>
+          {be.map(e=>(
+            <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #222"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",background:"#2a2a2a",display:"flex",alignItems:"center",justifyContent:"center"}}><Icon name="user" size={14}/></div><div><div style={{color:"#ccc",fontSize:13,fontWeight:600}}>{e.name}</div><div style={{color:"#555",fontSize:12}}>{e.hrs.toFixed(1)} hrs</div></div></div>
+              <div style={{textAlign:"right"}}><div style={{color:"#e0e0e0",fontSize:13,fontWeight:600}}>{fmtCAD(e.cost)}</div><div style={{color:"#444",fontSize:11}}>{fmtCAD(e.rate)}/hr</div></div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {f.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:"#444"}}>No sessions in this period</div>}
+
+      {f.length>0&&(
+        <div style={{padding:"16px 16px 0",display:"flex",flexDirection:"column",gap:8}}>
+          <button onClick={exportCSV} style={{width:"100%",padding:"12px",borderRadius:12,border:"1px solid #2a2a2a",background:"transparent",color:"#666",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Icon name="dl" size={14}/> Export CSV</button>
+          <button onClick={exportIIF} style={{width:"100%",padding:"12px",borderRadius:12,border:"1px solid #2E86AB44",background:"#2E86AB11",color:"#2E86AB",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Icon name="qb" size={14}/> Export for QuickBooks (.IIF)</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Jobs Tab ─────────────────────────────────────────────────────────────────
+function JobsTab({jobs,onAdd,onUpdate,onDelete,employees,onAddEmp,onUpdateEmp,onDeleteEmp}){
+  const [view,setView]=useState("jobs"); // jobs | crew
+  const [showAdd,setShowAdd]=useState(false); const [editId,setEditId]=useState(null);
+  const [form,setForm]=useState({name:"",rate:"",notes:""}); const [ci,setCi]=useState(0);
+  const [showAddEmp,setShowAddEmp]=useState(false); const [editEmpId,setEditEmpId]=useState(null);
+  const [empForm,setEmpForm]=useState({name:"",rate:""});
+
+  function Swatches(){return<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{JOB_COLORS.map((c,i)=><div key={c} onClick={()=>setCi(i)} style={{width:26,height:26,borderRadius:"50%",background:c,cursor:"pointer",border:ci===i?"2px solid #fff":"2px solid transparent"}}/>)}</div>;}
+
+  return(
+    <div style={{padding:"0 0 100px"}}>
+      <div style={{display:"flex",background:"#1a1a1a",borderRadius:12,padding:4,margin:"16px 16px 0",border:"1px solid #2a2a2a"}}>
+        {[["jobs","Jobs"],["crew","Crew"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setView(v)} style={{flex:1,padding:"9px",borderRadius:9,border:"none",background:view===v?"#E8651A":"transparent",color:view===v?"#fff":"#555",fontWeight:view===v?700:400,cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+            <Icon name={v==="jobs"?"note":"users"} size={14}/>{l}
+          </button>
+        ))}
+      </div>
+
+      {view==="jobs"&&(
+        <div style={{padding:"12px 16px 0"}}>
+          {jobs.map(job=>(
+            <div key={job.id} style={{...card,padding:"16px 18px",marginBottom:10}}>
+              {editId===job.id?(
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  <input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Job name" style={inp}/>
+                  <input type="number" value={form.rate} onChange={e=>setForm({...form,rate:e.target.value})} placeholder="Rate (CAD/hr)" style={inp}/>
+                  <div><label style={lbl}>Notes</label><textarea value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} placeholder="Address, contact, scope of work..." style={{...inp,height:80,resize:"vertical"}}/></div>
+                  <Swatches/>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>{onUpdate({...job,name:form.name,rate:parseFloat(form.rate),color:JOB_COLORS[ci%JOB_COLORS.length],notes:form.notes});setEditId(null);}} style={{flex:1,padding:"10px",borderRadius:8,border:"none",background:"#E8651A",color:"#fff",fontWeight:700,cursor:"pointer"}}>Save</button>
+                    <button onClick={()=>setEditId(null)} style={{padding:"10px 14px",borderRadius:8,border:"1px solid #333",background:"transparent",color:"#666",cursor:"pointer"}}>Cancel</button>
+                  </div>
+                </div>
+              ):(
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:12}}>
+                    <div style={{width:12,height:12,borderRadius:"50%",background:job.color,flexShrink:0}}/>
+                    <div style={{flex:1}}><div style={{color:"#e0e0e0",fontSize:14,fontWeight:600}}>{job.name}</div><div style={{color:"#555",fontSize:12}}>{fmtCAD(job.rate)}/hr</div></div>
+                    <button onClick={()=>{setEditId(job.id);setForm({name:job.name,rate:String(job.rate),notes:job.notes||""});setCi(JOB_COLORS.indexOf(job.color)||0);}} style={{...ib,marginRight:4}}><Icon name="edit" size={15}/></button>
+                    <button onClick={()=>{if(confirm("Delete this job?"))onDelete(job.id);}} style={ib}><Icon name="trash" size={15}/></button>
+                  </div>
+                  {job.notes&&<div style={{color:"#555",fontSize:12,marginTop:8,paddingLeft:24,lineHeight:1.5}}>{job.notes}</div>}
+                </div>
+              )}
+            </div>
+          ))}
+          {showAdd?(
+            <div style={{...card,padding:"16px 18px"}}>
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                <input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Job name" style={inp}/>
+                <input type="number" value={form.rate} onChange={e=>setForm({...form,rate:e.target.value})} placeholder="Hourly rate (CAD)" style={inp}/>
+                <div><label style={lbl}>Notes (optional)</label><textarea value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} placeholder="Address, contact, scope of work..." style={{...inp,height:80,resize:"vertical"}}/></div>
+                <Swatches/>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>{if(!form.name||!form.rate)return;onAdd({name:form.name,rate:parseFloat(form.rate),color:JOB_COLORS[ci%JOB_COLORS.length],notes:form.notes});setForm({name:"",rate:"",notes:""});setShowAdd(false);}} style={{flex:1,padding:"10px",borderRadius:8,border:"none",background:"#E8651A",color:"#fff",fontWeight:700,cursor:"pointer"}}>Add Job</button>
+                  <button onClick={()=>setShowAdd(false)} style={{padding:"10px 14px",borderRadius:8,border:"1px solid #333",background:"transparent",color:"#666",cursor:"pointer"}}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          ):(
+            <button onClick={()=>{setShowAdd(true);setForm({name:"",rate:"",notes:""}); }} style={{width:"100%",padding:"14px",borderRadius:12,border:"1px dashed #333",background:"transparent",color:"#666",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Icon name="plus" size={14}/> New Job</button>
+          )}
+        </div>
+      )}
+
+      {view==="crew"&&(
+        <div style={{padding:"12px 16px 0"}}>
+          {employees.length===0&&!showAddEmp&&<div style={{color:"#555",fontSize:13,textAlign:"center",padding:"30px 0"}}>No crew members yet.</div>}
+          {employees.map(emp=>(
+            <div key={emp.id} style={{...card,padding:"16px 18px",marginBottom:10}}>
+              {editEmpId===emp.id?(
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  <input value={empForm.name} onChange={e=>setEmpForm({...empForm,name:e.target.value})} placeholder="Name" style={inp}/>
+                  <input type="number" value={empForm.rate} onChange={e=>setEmpForm({...empForm,rate:e.target.value})} placeholder="Hourly rate (CAD)" style={inp}/>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>{onUpdateEmp({...emp,name:empForm.name,rate:parseFloat(empForm.rate)});setEditEmpId(null);}} style={{flex:1,padding:"10px",borderRadius:8,border:"none",background:"#E8651A",color:"#fff",fontWeight:700,cursor:"pointer"}}>Save</button>
+                    <button onClick={()=>setEditEmpId(null)} style={{padding:"10px 14px",borderRadius:8,border:"1px solid #333",background:"transparent",color:"#666",cursor:"pointer"}}>Cancel</button>
+                  </div>
+                </div>
+              ):(
+                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{width:32,height:32,borderRadius:"50%",background:"#2a2a2a",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Icon name="user" size={16}/></div>
+                  <div style={{flex:1}}><div style={{color:"#e0e0e0",fontSize:14,fontWeight:600}}>{emp.name}</div><div style={{color:"#555",fontSize:12}}>{fmtCAD(emp.rate)}/hr</div></div>
+                  <button onClick={()=>{setEditEmpId(emp.id);setEmpForm({name:emp.name,rate:String(emp.rate)});}} style={{...ib,marginRight:4}}><Icon name="edit" size={15}/></button>
+                  <button onClick={()=>{if(confirm(`Remove ${emp.name}?`))onDeleteEmp(emp.id);}} style={ib}><Icon name="trash" size={15}/></button>
+                </div>
+              )}
+            </div>
+          ))}
+          {showAddEmp?(
+            <div style={{...card,padding:"16px 18px"}}>
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                <input value={empForm.name} onChange={e=>setEmpForm({...empForm,name:e.target.value})} placeholder="Employee name" style={inp}/>
+                <input type="number" value={empForm.rate} onChange={e=>setEmpForm({...empForm,rate:e.target.value})} placeholder="Hourly rate (CAD)" style={inp}/>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>{if(!empForm.name||!empForm.rate)return;onAddEmp({name:empForm.name,rate:parseFloat(empForm.rate)});setEmpForm({name:"",rate:""});setShowAddEmp(false);}} style={{flex:1,padding:"10px",borderRadius:8,border:"none",background:"#E8651A",color:"#fff",fontWeight:700,cursor:"pointer"}}>Add</button>
+                  <button onClick={()=>setShowAddEmp(false)} style={{padding:"10px 14px",borderRadius:8,border:"1px solid #333",background:"transparent",color:"#666",cursor:"pointer"}}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          ):(
+            <button onClick={()=>{setShowAddEmp(true);setEmpForm({name:"",rate:""}); }} style={{width:"100%",padding:"14px",borderRadius:12,border:"1px dashed #333",background:"transparent",color:"#666",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Icon name="plus" size={14}/> Add Crew Member</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
+function App(){
+  const [authData,setAuthData]=useState(()=>loadAuth());
+  const [jobs,setJobs]=useState([]); const [sessions,setSessions]=useState([]);
+  const [employees,setEmployees]=useState([]); const [mileage,setMileage]=useState([]);
+  const [active,setActive]=useState(null); const [tab,setTab]=useState("clock");
+  const [busy,setBusy]=useState(false); const [loading,setLoading]=useState(false);
+  const token=authData?.access_token;
+
+  useEffect(()=>{
+    if(!token)return;
+    async function load(){
+      setLoading(true);
+      const[j,s,e,m]=await Promise.all([api.select(token,"jobs"),api.select(token,"sessions"),api.select(token,"employees"),api.select(token,"mileage")]);
+      if(Array.isArray(j))setJobs(j);
+      if(Array.isArray(s)){setSessions(s.filter(x=>x.end_time));setActive(s.find(x=>!x.end_time)||null);}
+      if(Array.isArray(e))setEmployees(e);
+      if(Array.isArray(m))setMileage(m);
+      setLoading(false);
+    }
+    load();
+  },[token]);
+
+  async function clockIn(jobId,empId){
+    setBusy(true);const u=await api.user(token);
+    const r=await api.insert(token,"sessions",{job_id:jobId,employee_id:empId||null,start_time:new Date().toISOString(),user_id:u.id});
+    if(Array.isArray(r)&&r[0])setActive(r[0]);setBusy(false);
+  }
+  async function clockOut(){
+    if(!active)return;setBusy(true);
+    const r=await api.update(token,"sessions",active.id,{end_time:new Date().toISOString()});
+    if(Array.isArray(r)&&r[0]){setSessions(p=>[...p,r[0]]);setActive(null);}setBusy(false);
+  }
+  async function saveSession(sess,onDone){
+    setBusy(true);
+    if(sess.id){
+      // edit
+      const r=await api.update(token,"sessions",sess.id,{job_id:sess.job_id,employee_id:sess.employee_id,start_time:sess.start_time,end_time:sess.end_time});
+      if(Array.isArray(r)&&r[0])setSessions(p=>p.map(s=>s.id===sess.id?r[0]:s));
+    }else{
+      const u=await api.user(token);
+      const r=await api.insert(token,"sessions",{...sess,user_id:u.id});
+      if(Array.isArray(r)&&r[0])setSessions(p=>[...p,r[0]]);
+    }
+    setBusy(false);if(onDone)onDone();
+  }
+  async function deleteSession(id){await api.delete(token,"sessions",id);setSessions(p=>p.filter(s=>s.id!==id));}
+
+  async function addJob(job){const u=await api.user(token);const r=await api.insert(token,"jobs",{...job,user_id:u.id});if(Array.isArray(r)&&r[0])setJobs(p=>[...p,r[0]]);}
+  async function updateJob(job){const r=await api.update(token,"jobs",job.id,{name:job.name,rate:job.rate,color:job.color,notes:job.notes});if(Array.isArray(r)&&r[0])setJobs(p=>p.map(j=>j.id===job.id?r[0]:j));}
+  async function deleteJob(id){await api.delete(token,"jobs",id);setJobs(p=>p.filter(j=>j.id!==id));setSessions(p=>p.filter(s=>s.job_id!==id));}
+
+  async function addEmployee(emp){const u=await api.user(token);const r=await api.insert(token,"employees",{...emp,user_id:u.id});if(Array.isArray(r)&&r[0])setEmployees(p=>[...p,r[0]]);}
+  async function updateEmployee(emp){const r=await api.update(token,"employees",emp.id,{name:emp.name,rate:emp.rate});if(Array.isArray(r)&&r[0])setEmployees(p=>p.map(e=>e.id===emp.id?r[0]:e));}
+  async function deleteEmployee(id){await api.delete(token,"employees",id);setEmployees(p=>p.filter(e=>e.id!==id));}
+
+  async function addMileage(m){const u=await api.user(token);const r=await api.insert(token,"mileage",{...m,user_id:u.id});if(Array.isArray(r)&&r[0])setMileage(p=>[...p,r[0]]);}
+  async function deleteMileage(id){await api.delete(token,"mileage",id);setMileage(p=>p.filter(m=>m.id!==id));}
+
+  async function signOut(){if(token)await api.signOut(token);clearAuth();setAuthData(null);setJobs([]);setSessions([]);setEmployees([]);setMileage([]);setActive(null);}
+
+  if(!authData)return<AuthScreen onAuth={d=>{saveAuth(d);setAuthData(d);}}/>;
+
+  const TABS=[{id:"clock",l:"Clock",i:"clock"},{id:"calendar",l:"Calendar",i:"cal"},{id:"mileage",l:"Mileage",i:"truck"},{id:"reports",l:"Reports",i:"chart"},{id:"jobs",l:"Jobs",i:"cog"}];
+
+  return(
+    <div style={{maxWidth:430,margin:"0 auto",minHeight:"100vh",background:"#111",fontFamily:"'DM Sans',sans-serif",position:"relative"}}>
+      <div style={{padding:"20px 20px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"1px solid #1e1e1e"}}>
+        <div>
+          <div style={{fontSize:20,fontWeight:800,fontFamily:"'Syne',sans-serif",color:"#fff",letterSpacing:-0.5}}>Site<span style={{color:"#E8651A"}}>Ledger</span></div>
+          {active&&<div style={{fontSize:11,color:"#E8651A",fontFamily:"'DM Mono',monospace",letterSpacing:1}}>● CLOCKED IN</div>}
+        </div>
+        <button onClick={signOut} style={{...ib,color:"#555"}}><Icon name="logout" size={18}/></button>
+      </div>
+      {loading?(
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",padding:"80px 0",color:"#444",fontSize:14}}>Loading your data...</div>
+      ):(
+        <>
+          {tab==="clock"&&<ClockTab jobs={jobs} employees={employees} sessions={sessions} active={active} onIn={clockIn} onOut={clockOut} onSave={saveSession} onDelete={deleteSession} busy={busy}/>}
+          {tab==="calendar"&&<CalendarTab jobs={jobs} employees={employees} sessions={sessions} onSave={saveSession} onDelete={deleteSession} busy={busy}/>}
+          {tab==="mileage"&&<MileageTab jobs={jobs} mileage={mileage} onAdd={addMileage} onDelete={deleteMileage} busy={busy}/>}
+          {tab==="reports"&&<ReportsTab jobs={jobs} employees={employees} sessions={sessions} mileage={mileage}/>}
+          {tab==="jobs"&&<JobsTab jobs={jobs} onAdd={addJob} onUpdate={updateJob} onDelete={deleteJob} employees={employees} onAddEmp={addEmployee} onUpdateEmp={updateEmployee} onDeleteEmp={deleteEmployee}/>}
+        </>
+      )}
+      <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"#0d0d0d",borderTop:"1px solid #1e1e1e",display:"flex",padding:"8px 0 12px"}}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3,background:"transparent",border:"none",cursor:"pointer",padding:"6px 0",color:tab===t.id?"#E8651A":"#444"}}>
+            <Icon name={t.i} size={19}/>
+            <span style={{fontSize:9,fontFamily:"'DM Mono',monospace",letterSpacing:0.5}}>{t.l}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
